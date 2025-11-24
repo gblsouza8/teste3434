@@ -106,27 +106,6 @@
         <section id="dashboard-section" class="page-section p-8 bg-white shadow-xl rounded-lg">
             <h1 class="text-4xl font-extrabold text-indigo-700 mb-6">Olá, <span id="tutor-nome-display">Cliente!</span></h1>
             
-            <div id="complete-profile-container" class="mb-8 p-6 bg-red-50 border border-red-300 rounded-lg shadow-md hidden">
-                <h2 class="text-2xl font-bold text-red-700 mb-3">⚠️ Cadastro Incompleto</h2>
-                <p class="text-red-600 mb-4">Seus dados pessoais não foram finalizados. Por favor, complete as informações abaixo para acessar todos os recursos da clínica.</p>
-                <form id="complete-profile-form" class="space-y-4">
-                    <div>
-                        <label for="complete-nome" class="block text-sm font-medium text-gray-700">Nome Completo:</label>
-                        <input type="text" id="complete-nome" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm">
-                    </div>
-                    <div>
-                        <label for="complete-cpf" class="block text-sm font-medium text-gray-700">CPF (apenas números):</label>
-                        <input type="text" id="complete-cpf" required maxlength="11" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm">
-                    </div>
-                    <div>
-                        <label for="complete-telefone" class="block text-sm font-medium text-gray-700">Telefone (DDD + Número):</label>
-                        <input type="tel" id="complete-telefone" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm">
-                    </div>
-                    <button type="submit" id="complete-profile-submit-btn" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 transition duration-150">
-                        Finalizar Cadastro
-                    </button>
-                </form>
-            </div>
             
             <div id="dashboard-content">
                 <p class="text-lg text-gray-600 mb-8">Gerencie seus pets e consultas.</p>
@@ -479,6 +458,8 @@
             if (appIsReady) {
                 if (event === 'SIGNED_IN' && session) {
                     // Apenas se o evento for um novo login
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
                     await loadTutorData(session.user.id);
                     document.getElementById('tutor-nome-display').textContent = tutorData ? tutorData.nome.split(' ')[0] : 'Cliente';
                     navigateTo('dashboard-section');
@@ -498,14 +479,8 @@
                 .single();
 
             if (error) {
-                // PGRST116: Nenhum dado encontrado, o que significa perfil incompleto para este Auth ID.
-                if (error.code === 'PGRST116') {
-                    tutorData = null;
-                    return;
-                }
-                
+
                 console.error("Erro ao carregar dados do tutor:", error); // Debug Log
-                showNotification(`Erro ao carregar seus dados: ${error.message}.`, 'error');
                 tutorData = null;
                 return;
             }
@@ -531,7 +506,6 @@
             }
 
 
-            document.getElementById('complete-profile-container').classList.toggle('hidden', isProfileComplete);
             document.getElementById('dashboard-content').classList.toggle('hidden', !isProfileComplete);
             document.getElementById('tutor-nome-display').textContent = tutorData ? tutorData.nome.split(' ')[0] : 'Cliente';
         }
@@ -691,10 +665,9 @@
             // onAuthStateChange cuidará da navegação
         });
 
-        // Submissão de Cadastro (LÓGICA BLOQUEIO DE INSERÇÃO DE TUTOR)
+// Submissão de Cadastro (LÓGICA BLOQUEIO DE INSERÇÃO DE TUTOR)
         document.getElementById('cadastro-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-
             const cadastroBtn = 'cadastro-submit-btn';
             const defaultText = 'Confirmar Cadastro';
             setButtonLoading(cadastroBtn, true, defaultText); // Inicia o loading
@@ -713,146 +686,103 @@
             }
             if (cpf.length !== 11) {
                 setButtonLoading(cadastroBtn, false, defaultText);
-                showNotification('O CPF deve conter exatamente 11 dígitos.', 'error');
+                showNotification('O CPF deve ter 11 dígitos.', 'error');
                 return;
             }
-            if (!nome || !email || !telefone) {
-                 setButtonLoading(cadastroBtn, false, defaultText);
-                showNotification('Por favor, preencha todos os campos obrigatórios.', 'error');
-                return;
-            }
-            // -----------------------------------
 
-            // 1. Criar usuário de autenticação
-            const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
+            // ⚠️ PASSO CRUCIAL: PRÉ-CHECA se CPF ou Telefone JÁ EXISTEM na tabela tutores.
+            const { data: existingTutor, error: checkError } = await supabase
+                .from('tutores')
+                .select('cpf, telefone')
+                .or(`cpf.eq.${cpf},telefone.eq.${telefone}`); // Busca por CPF OU Telefone
+
+            if (checkError) {
+                console.error("Erro na pré-checagem do tutor:", checkError);
+                setButtonLoading(cadastroBtn, false, defaultText);
+                showNotification('Erro interno ao verificar dados de unicidade.', 'error');
+                return;
+            }
             
+            if (existingTutor && existingTutor.length > 0) {
+                let errorMessage = 'Erro no Cadastro: O ';
+                // Verifica qual campo causou o conflito (para melhor mensagem de erro)
+                if (existingTutor.some(t => t.cpf === cpf)) {
+                    errorMessage += 'CPF já está registrado.';
+                } else if (existingTutor.some(t => t.telefone === telefone)) {
+                    errorMessage += 'Telefone já está registrado.';
+                } else {
+                    errorMessage = 'Erro no Cadastro: Dados de identificação já estão em uso.';
+                }
+
+                setButtonLoading(cadastroBtn, false, defaultText);
+                showNotification(errorMessage, 'error');
+                
+                // Retorna AQUI, IMPEDINDO A CRIAÇÃO DO USUÁRIO AUTH
+                return; 
+            }
+            // --- FIM DA PRÉ-CHECA ---
+            
+            // 1. Tenta criar o usuário Auth (Só executa se o CPF/Telefone estiverem livres)
+            const { data: { user }, error: authError } = await supabase.auth.signUp({ 
+                email, 
+                password 
+            });
+
             if (authError) {
-                console.error("Erro de Cadastro (Auth) Supabase:", authError); // Debug Log
-                showNotification(`Erro no cadastro: ${authError.message}`, 'error');
-                setButtonLoading(cadastroBtn, false, defaultText); // Para o loading
+                setButtonLoading(cadastroBtn, false, defaultText); 
+                    
+                let errorMessage = `Erro no Cadastro: ${authError.message}`;
+
+                // ⚠️ NOVO: TRATAMENTO DO ERRO DE EMAIL JÁ REGISTRADO 
+                if (authError.message.includes('User already registered') || authError.message.includes('duplicate key value')) {
+                    errorMessage = 'Erro no Cadastro: O email já está cadastrado. Tente fazer login.';
+                }
+
+                showNotification(errorMessage, 'error'); 
                 return;
             }
 
-            if (!authData || !authData.user) {
-                showNotification('Erro interno: Usuário não criado. Tente novamente.', 'error');
-                setButtonLoading(cadastroBtn, false, defaultText); // Para o loading
-                return;
-            }
+            const userId = user.id;
 
-            // 2. Inserir dados do Tutor na tabela 'tutores'
-            const userId = authData.user.id;
+            // 2. Insere os dados completos do tutor na tabela 'tutores'
             const { error: dbError } = await supabase
                 .from('tutores')
-                .insert([{ id: userId, nome, cpf, telefone }]);
-            
-            if (dbError) {
-                // Erro 2: Inserção no DB Falhou (e.g., duplicidade de CPF/Telefone)
-                console.error("Erro de Inserção de Tutor (DB/RLS):", dbError); // Debug Log
-                
-                let errorMessage = `Erro Crítico: Não foi possível finalizar o cadastro.`;
+                .insert([
+                    { id: userId, nome, cpf, telefone }
+                ]); 
 
-                // Tratar violação de chave duplicada (CPF ou Telefone)
+            if (dbError) {
+                // Embora tenhamos pré-checado, esta é uma segunda linha de defesa
+                console.error("Erro ao inserir dados do tutor (pós-Auth):", dbError); // Debug Log
+
+                let errorMessage = `Erro ao salvar dados do tutor: ${dbError.message}.`;
+                
                 if (dbError.code === '23505') {
-                    if (dbError.details && dbError.details.includes('cpf_key')) {
-                        errorMessage = 'Erro no Cadastro: O CPF fornecido já está registrado em nossa base.';
-                    } else if (dbError.details && dbError.details.includes('telefone_key')) {
-                        errorMessage = 'Erro no Cadastro: O Telefone fornecido já está registrado em nossa base.';
-                    } else {
-                         errorMessage = 'Erro no Cadastro: Um dos campos (CPF ou Telefone) já está em uso.';
-                    }
+                    // Este erro só ocorre se outro usuário se cadastrou entre o pré-check e a inserção (muito raro)
+                    errorMessage = 'Erro no Cadastro: Um dos campos obrigatórios já está em uso.';
                 }
                 
-                // ⚠️ AÇÃO CRUCIAL: Deslogar o usuário para BLOQUEAR a entrada no Dashboard.
+                // AÇÃO CRUCIAL: Deslogar o usuário para BLOQUEAR a entrada no Dashboard.
                 await supabase.auth.signOut();
-                
+
                 showNotification(errorMessage, 'error');
-                e.target.reset(); // Limpa o formulário e permanece na tela de autenticação
-                setButtonLoading(cadastroBtn, false, defaultText); // Para o loading
-                return; // Encerra a execução após o erro/logout
+                e.target.reset(); 
+                setButtonLoading(cadastroBtn, false, defaultText); 
+                return; 
             }
 
             // SUCCESS PATH (Auth + DB 100%)
-            // CORREÇÃO: Popula tutorData localmente e atualiza a UI.
-            // Isso garante que o onAuthStateChange (que dispara async) tenha os dados completos.
-            tutorData = { id: userId, nome, cpf, telefone }; 
-            appIsReady = true; // Marca como pronto, pois os dados estão aqui.
+            tutorData = { id: userId, nome, cpf, telefone };
+            appIsReady = true;
 
             showNotification('Cadastro realizado com sucesso! Você está logado.', 'success');
-            e.target.reset(); // Limpa o formulário
-            setButtonLoading(cadastroBtn, false, defaultText); // Para o loading
-
-            // Força a navegação e atualização da UI sem depender do listener assíncrono.
+            e.target.reset(); 
+            setButtonLoading(cadastroBtn, false, defaultText); 
+            
             document.getElementById('tutor-nome-display').textContent = tutorData.nome.split(' ')[0];
             navigateTo('dashboard-section');
         });
         
-        // Submissão de Conclusão de Cadastro
-        document.getElementById('complete-profile-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const completeBtn = 'complete-profile-submit-btn';
-            const defaultText = 'Finalizar Cadastro';
-            setButtonLoading(completeBtn, true, defaultText);
-            
-            const user = supabase.auth.currentUser;
-            if (!user) {
-                setButtonLoading(completeBtn, false, defaultText);
-                showNotification("Sua sessão expirou. Por favor, faça login novamente.", 'error');
-                navigateTo('auth-section');
-                return;
-            }
-
-            const nome = document.getElementById('complete-nome').value;
-            const cpf = document.getElementById('complete-cpf').value.replace(/\D/g, '');
-            const telefone = document.getElementById('complete-telefone').value;
-            const userId = user.id;
-
-            // Validação
-            if (cpf.length !== 11) {
-                setButtonLoading(completeBtn, false, defaultText);
-                showNotification('O CPF deve conter exatamente 11 dígitos.', 'error');
-                return;
-            }
-            if (!nome || !telefone) {
-                setButtonLoading(completeBtn, false, defaultText);
-                showNotification('Por favor, preencha todos os campos obrigatórios.', 'error');
-                return;
-            }
-            
-            // Inserção (usando insert com conflito para ser idempotente)
-            const { error: dbError } = await supabase
-                .from('tutores')
-                .insert([{ id: userId, nome, cpf, telefone }]);
-
-            setButtonLoading(completeBtn, false, defaultText);
-
-            if (dbError) {
-                console.error("Erro de Inserção de Tutor (Conclusão):", dbError); // Debug Log
-                
-                let errorMessage = `Erro ao finalizar cadastro: Não foi possível salvar seus dados.`;
-
-                // Tratar violação de chave duplicada (CPF ou Telefone)
-                if (dbError.code === '23505') {
-                    if (dbError.details && dbError.details.includes('cpf_key')) {
-                        errorMessage = 'Erro ao finalizar cadastro: O CPF fornecido já está em uso.';
-                    } else if (dbError.details && dbError.details.includes('telefone_key')) {
-                        errorMessage = 'Erro ao finalizar cadastro: O Telefone fornecido já está em uso.';
-                    } else {
-                         errorMessage = 'Erro ao finalizar cadastro: Um dos campos (CPF/Telefone) já está em uso.';
-                    }
-                }
-                
-                showNotification(errorMessage, 'error');
-                return; // Retorna aqui, mantendo o usuário na tela de conclusão de cadastro (com o erro visível)
-            }
-
-            // Sucesso
-            // Atualiza o estado local e a UI
-            tutorData = { id: userId, nome, cpf, telefone }; 
-            showNotification('Dados de cadastro atualizados com sucesso! Bem-vindo(a).', 'success');
-            e.target.reset();
-            updateDashboardDisplay(); // Remove a tela de incompletude
-        });
 
         // --- LÓGICA DE EDIÇÃO DE PERFIL (NOVO) ---
         

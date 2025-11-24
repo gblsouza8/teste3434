@@ -469,31 +469,25 @@
 
         // --- LÓGICA DE AUTENTICAÇÃO E ROTEAMENTO ---
         
-        supabase.auth.onAuthStateChange(async (event, session) => {
-            // Inicialmente, sempre mostra a tela de carregamento para evitar o "flicker"
-            if (!appIsReady) {
-                navigateTo('loading-section');
-            }
 
-            if (session) {
-                // Usuário logado: 1. Carregar dados do tutor
-                await loadTutorData(session.user.id);
-                // 2. Atualizar UI e botões de navegação
-                document.getElementById('tutor-nome-display').textContent = tutorData ? tutorData.nome.split(' ')[0] : 'Cliente';
-                updateNavButtons(true);
-                // 3. Navegar para o dashboard
-                navigateTo('dashboard-section');
-            } else {
-                // Usuário deslogado: 1. Limpar dados
-                tutorData = null;
-                // 2. Atualizar botões de navegação
-                updateNavButtons(false);
-                // 3. Navegar para a Home
-                navigateTo('home-section');
+        // Localização: Por volta da linha 290
+        supabase.auth.onAuthStateChange(async (event, session) => {
+            // ESTA PARTE VAI SUMIR: if (!appIsReady) { navigateTo('loading-section'); }
+
+            // Este listener só deve agir após o carregamento inicial (appIsReady)
+            // E quando houver uma MUDANÇA no estado de autenticação (event).
+            if (appIsReady) {
+                if (event === 'SIGNED_IN' && session) {
+                    // Apenas se o evento for um novo login
+                    await loadTutorData(session.user.id);
+                    document.getElementById('tutor-nome-display').textContent = tutorData ? tutorData.nome.split(' ')[0] : 'Cliente';
+                    navigateTo('dashboard-section');
+                } else if (event === 'SIGNED_OUT' || !session) {
+                    // Se deslogou
+                    tutorData = null;
+                    navigateTo('home-section');
+                }
             }
-            
-            // Depois que o primeiro onAuthStateChange rodar, o app está pronto para as navegações diretas.
-            appIsReady = true;
         });
 
         async function loadTutorData(userId) {
@@ -583,6 +577,15 @@
             console.log("Heartbeat da sessão iniciado. Verificação a cada 1 minuto.");
         }
         // --- FIM DA LÓGICA DE HEARTBEAT ---
+
+// --- NOVO: LÓGICA DE REFRESH NA VISIBILIDADE (visibilityChange) ---
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') {
+                // Força o refresh da página (reload) quando o usuário volta para a aba.
+                console.log("Página visível novamente. Recarregando...");
+                window.location.reload();
+            }
+        });
 
 
         // --- FUNÇÕES DE CARREGAMENTO DE DADOS INICIAIS ---
@@ -1603,15 +1606,37 @@
         });
 
         // Inicialização
-        document.addEventListener('DOMContentLoaded', () => {
-            // Inicia mostrando o loading, o onAuthStateChange cuidará da primeira navegação correta.
-            navigateTo('loading-section'); 
-            loadEspecialidades();
-            loadMedicos(); // Pré-carrega os médicos
-            setMinDate(); // Define a data mínima no input de agendamento (hoje)
-            startHeartbeat(); // INICIA O MECANISMO DE HEARTBEAT
-        });
+// Localização: Final do Script (Por volta da linha 810)
+document.addEventListener('DOMContentLoaded', async () => {
+    
+    // 1. Mostrar loading e iniciar carregamento de dados públicos
+    navigateTo('loading-section'); 
+    loadEspecialidades();
+    loadMedicos(); 
+    setMinDate(); 
+    startHeartbeat(); 
 
+    // 2. O PONTO MAIS CRÍTICO: ESPERAR a sessão ser restaurada (do localStorage)
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    if (session) {
+        // 3. Sessão restaurada. Agora carregue os DADOS do usuário.
+        await loadTutorData(session.user.id);
+        
+        // 4. Navegue para o Dashboard (o loadTutorData já cuida da tela de "Cadastro Incompleto" internamente)
+        document.getElementById('tutor-nome-display').textContent = tutorData ? tutorData.nome.split(' ')[0] : 'Cliente';
+        updateNavButtons(true);
+        navigateTo('dashboard-section');
+
+    } else {
+        // 5. Nenhuma sessão. Navegue para a Home.
+        navigateTo('home-section');
+    }
+    
+    // Marca o aplicativo como pronto após a navegação inicial ter sido resolvida
+    // Isso evita que o onAuthStateChange cause um "flicker" logo após este bloco
+    appIsReady = true; 
+});
     </script>
 </body>
 </html>
